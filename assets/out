@@ -1,0 +1,169 @@
+#!/usr/bin/env python
+import json
+import os
+import re
+import subprocess
+import sys
+import shutil
+
+class OutputInspector(object):
+
+    def __init__(self, output):
+        self.output = output
+        if isinstance(output, list):
+            self.output = "\n".join(output)
+
+    def contains(self, pattern):
+        matches = re.findall(pattern, self.output)
+        return matches is not None and len(matches) > 0
+
+
+class ShellCommand(object):
+
+    def __init__(self, command):
+        self.commands = command.split(" ")
+
+    def concatenate(self, other_command):
+        self.commands.append("&&")
+        self.commands.extend(other_command.build_list())
+        return self
+
+    def add_option(self, option, value=None, assignment_character=" "):
+        if value is None:
+            self.commands.append(option)
+        else:
+            if assignment_character == " ":
+                self.commands.append(option)
+                self.commands.append(value)
+            else:
+                self.commands.append(option + assignment_character + value)
+        return self
+
+    def add_arg(self, value):
+        self.commands.append(value)
+        return self
+
+    def build_list(self):
+        return self.commands
+
+    def build_string(self):
+        return " ".join(self.commands)
+
+
+class SimpleShell(object):
+
+    def __init__(self):
+        self.commands = []
+        self._reset_output()
+
+    def _reset_output(self):
+        self.last_output = {
+            "stdout": [],
+            "stderr": []
+        }
+
+    def _append_stdout(self, output):
+        self.last_output["stdout"].append(output)
+
+    def _append_stderr(self, error):
+        self.last_output["stderr"].append(error)
+
+    def run(self, command, display_output=True):
+        runnable_command = command
+        if isinstance(command, ShellCommand):
+            runnable_command = command.build_list()
+
+        process = subprocess.Popen(runnable_command, shell=False, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE,
+                                   bufsize=0)
+        self._reset_output()
+        while True:
+            output = process.stdout.readline()
+            error = process.stderr.readline()
+            if len(error) > 0:
+                decoded_error = error.strip().decode()
+                self._append_stderr(decoded_error)
+                if display_output:
+                    print(decoded_error)
+            if output is not None and len(output) == 0 and process.poll() is not None:
+                break
+            elif output:
+                decoded_output = output.strip().decode()
+                self._append_stdout(decoded_output)
+                if display_output:
+                    print(decoded_output)
+
+        return self
+
+    def get_stdout(self):
+        return self.last_output["stdout"]
+
+    def get_stderr(self):
+        return self.last_output["stderr"]
+
+
+def get_tag(params):
+    if "tag_file" in params:
+        with open(params["tag_file"], "r") as fh:
+            return fh.read().strip()
+    return "latest"
+
+
+def get_destination(params):
+    tag = get_tag(params)
+    return params["registry"] + "/" + params["image_name"] + ":" + tag
+
+
+def get_dockerfile(params):
+    if "dockerfile" in params:
+        return params["dockerfile"]
+
+    return "Dockerfile"
+
+
+def get_context(params):
+    if "context" in params:
+        return params["context"]
+
+    return None
+
+
+def set_argument(argument_store, argument_name, value):
+    if value is not None:
+        argument_store[argument_name] = value
+
+
+def build_kaniko_command(payload):
+    argument_store = {}
+    params = payload["params"]
+    set_argument(argument_store, "--context", get_context(params))
+    set_argument(argument_store, "--destination", get_destination(params))
+    set_argument(argument_store, "--dockerfile", get_dockerfile(params))
+
+    command = ShellCommand("executor")
+    for argument_key in argument_store:
+        command.add_option(argument_key, argument_store[argument_key], "=")
+
+    return command
+
+
+def do_docker_auth(source, kaniko_home_folder):
+    kaniko_docker_folder = kaniko_home_folder + ".docker/"
+    if "docker_config_file" in source:
+        if not os.path.exists(kaniko_docker_folder):
+            os.makedirs(kaniko_docker_folder)
+        shutil.copyfile(source["docker_config_file"], kaniko_docker_folder + "config.json")
+
+
+def run(payload, args):
+    kaniko_home_folder = "/kankiko/"
+    if not len(args) == 0 and args[0] == "test":
+        kaniko_home_folder = os.getcwd() + "/test/kaniko/"
+
+    do_docker_auth(payload["source"], kaniko_home_folder)
+    kaniko_command = build_kaniko_command(payload)
+    print(kaniko_command.build_string())
+    # SimpleShell().run(kaniko_command)
+
+
+run(json.loads(sys.stdin.read()), sys.argv[1:])

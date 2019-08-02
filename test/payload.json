@@ -1,0 +1,12 @@
+{
+  "source": {
+    "docker_config_file": "./test/docker_config.json"
+  },
+  "params": {
+    "image_name": "my-image",
+    "tag_file": "test/tag",
+    "build_context": "src",
+    "dockerfile": "Dockerfile.custom",
+    "registry": "some.registry.io"
+  }
+}
