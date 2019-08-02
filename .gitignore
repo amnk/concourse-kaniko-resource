@@ -1,2 +1,2 @@
-./test/kaniko/**
-./.idea
+test/kaniko
+.idea
