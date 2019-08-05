@@ -1,21 +1,23 @@
 #!/usr/bin/env python
+from __future__ import print_function
+
 import json
+import logging
 import os
-import re
+import shutil
 import subprocess
 import sys
-import shutil
+import time
+from shlex import split
 
-class OutputInspector(object):
-
-    def __init__(self, output):
-        self.output = output
-        if isinstance(output, list):
-            self.output = "\n".join(output)
-
-    def contains(self, pattern):
-        matches = re.findall(pattern, self.output)
-        return matches is not None and len(matches) > 0
+logging.basicConfig(level=logging.DEBUG)
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
+log = logging.getLogger("general")
+stderr = logging.StreamHandler(sys.stderr)
+stderr.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+stderr.setLevel(logging.DEBUG)
+log.addHandler(stderr)
 
 
 class ShellCommand(object):
@@ -50,58 +52,6 @@ class ShellCommand(object):
         return " ".join(self.commands)
 
 
-class SimpleShell(object):
-
-    def __init__(self):
-        self.commands = []
-        self._reset_output()
-
-    def _reset_output(self):
-        self.last_output = {
-            "stdout": [],
-            "stderr": []
-        }
-
-    def _append_stdout(self, output):
-        self.last_output["stdout"].append(output)
-
-    def _append_stderr(self, error):
-        self.last_output["stderr"].append(error)
-
-    def run(self, command, display_output=True):
-        runnable_command = command
-        if isinstance(command, ShellCommand):
-            runnable_command = command.build_list()
-
-        process = subprocess.Popen(runnable_command, shell=False, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE,
-                                   bufsize=0)
-        self._reset_output()
-        while True:
-            output = process.stdout.readline()
-            error = process.stderr.readline()
-            if len(error) > 0:
-                decoded_error = error.strip().decode()
-                self._append_stderr(decoded_error)
-                if display_output:
-                    print(decoded_error)
-            if output is not None and len(output) == 0 and process.poll() is not None:
-                break
-            elif output:
-                decoded_output = output.strip().decode()
-                self._append_stdout(decoded_output)
-                if display_output:
-                    print(decoded_output)
-
-        return self
-
-    def get_stdout(self):
-        return self.last_output["stdout"]
-
-    def get_stderr(self):
-        return self.last_output["stderr"]
-
-
 def get_tag(params):
     if "tag_file" in params:
         with open(params["tag_file"], "r") as fh:
@@ -122,8 +72,8 @@ def get_dockerfile(params):
 
 
 def get_context(params):
-    if "context" in params:
-        return params["context"]
+    if "build_context" in params:
+        return "/tmp/build/put/" + params["build_context"]
 
     return None
 
@@ -156,14 +106,61 @@ def do_docker_auth(source, kaniko_home_folder):
 
 
 def run(payload, args):
+    if payload["source"] is None:
+        payload["source"] = {}
+
+    with open("payload.json", "w") as fh:
+        fh.write(json.dumps(payload))
+
+    log.info("Payload: " + str(payload))
     kaniko_home_folder = "/kankiko/"
     if not len(args) == 0 and args[0] == "test":
         kaniko_home_folder = os.getcwd() + "/test/kaniko/"
 
     do_docker_auth(payload["source"], kaniko_home_folder)
     kaniko_command = build_kaniko_command(payload)
-    print(kaniko_command.build_string())
-    # SimpleShell().run(kaniko_command)
+    build_command = kaniko_command.build_string()
+
+    log.info(build_command)
+
+    if len(args) == 0 or args[0] != "test":
+        output = ''
+
+        proc = subprocess.Popen(split(build_command), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        while True:
+            byte = proc.stdout.read(1)
+            if byte:
+                sys.stderr.buffer.write(byte)
+                sys.stderr.flush()
+                output += str(byte, 'utf-8')
+            else:
+                break
+
+        while proc.poll() is None:
+            # Process hasn't exited yet, let's wait some
+            time.sleep(0.5)
+
+        last_line = output.strip().split("\n")[-1]
+        log.info("Last line:")
+        log.info(last_line)
+
+        log.info("Proc exited with code: " + str(proc.returncode))
+
+        if proc.returncode == 0:
+            sha = last_line.split(" ")[4]
+
+            concourse_output = {
+                "version": {"ref": sha},
+                "metadata": [
+                    {"name": "image_name", "value": payload["params"]["image_name"]},
+                    {"name": "registry", "value": payload["params"]["registry"]},
+                    {"name": "tag", "value": get_tag(payload["params"])},
+                ]
+            }
+
+            log.info(json.dumps(concourse_output))
+
+            print(json.dumps(concourse_output))
 
 
 run(json.loads(sys.stdin.read()), sys.argv[1:])
