@@ -10,14 +10,20 @@ import sys
 import time
 from shlex import split
 
-logging.basicConfig(level=logging.DEBUG)
-for handler in logging.root.handlers[:]:
-    logging.root.removeHandler(handler)
-log = logging.getLogger("general")
-stderr = logging.StreamHandler(sys.stderr)
-stderr.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
-stderr.setLevel(logging.DEBUG)
-log.addHandler(stderr)
+
+def configure_logging():
+    logging.basicConfig(level=logging.DEBUG)
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+    logger_instance = logging.getLogger("general")
+    stderr = logging.StreamHandler(sys.stderr)
+    stderr.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+    stderr.setLevel(logging.DEBUG)
+    log.addHandler(stderr)
+    return logger_instance
+
+
+log = configure_logging()
 
 
 class ShellCommand(object):
@@ -105,6 +111,46 @@ def do_docker_auth(source, kaniko_home_folder):
         shutil.copyfile(source["docker_config_file"], kaniko_docker_folder + "config.json")
 
 
+def execute_kaniko_command(payload, kaniko_build_command):
+    command_run_logs = ''
+
+    # Run command
+    proc = subprocess.Popen(split(kaniko_build_command), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    while True:
+        byte = proc.stdout.read(1)
+        if byte:
+            sys.stderr.buffer.write(byte)
+            sys.stderr.flush()
+            command_run_logs += str(byte, 'utf-8')
+        else:
+            break
+
+    # Wait for command to exit
+    while proc.poll() is None:
+        # Process hasn't exited yet, let's wait some
+        time.sleep(0.5)
+
+    last_line = command_run_logs.strip().split("\n")[-1]
+
+    log.info("Proc exited with code: " + str(proc.returncode))
+
+    if proc.returncode == 0:
+        sha = last_line.split(" ")[4]
+
+        concourse_output = {
+            "version": {"ref": sha},
+            "metadata": [
+                {"name": "image_name", "value": payload["params"]["image_name"]},
+                {"name": "registry", "value": payload["params"]["registry"]},
+                {"name": "tag", "value": get_tag(payload["params"])},
+            ]
+        }
+
+        log.info(json.dumps(concourse_output))
+
+        print(json.dumps(concourse_output))
+
+
 def run(payload, args):
     if payload["source"] is None:
         payload["source"] = {}
@@ -119,48 +165,12 @@ def run(payload, args):
 
     do_docker_auth(payload["source"], kaniko_home_folder)
     kaniko_command = build_kaniko_command(payload)
-    build_command = kaniko_command.build_string()
+    kaniko_command_string = kaniko_command.build_string()
 
-    log.info(build_command)
+    log.info("Command: " + kaniko_command_string)
 
     if len(args) == 0 or args[0] != "test":
-        output = ''
-
-        proc = subprocess.Popen(split(build_command), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        while True:
-            byte = proc.stdout.read(1)
-            if byte:
-                sys.stderr.buffer.write(byte)
-                sys.stderr.flush()
-                output += str(byte, 'utf-8')
-            else:
-                break
-
-        while proc.poll() is None:
-            # Process hasn't exited yet, let's wait some
-            time.sleep(0.5)
-
-        last_line = output.strip().split("\n")[-1]
-        log.info("Last line:")
-        log.info(last_line)
-
-        log.info("Proc exited with code: " + str(proc.returncode))
-
-        if proc.returncode == 0:
-            sha = last_line.split(" ")[4]
-
-            concourse_output = {
-                "version": {"ref": sha},
-                "metadata": [
-                    {"name": "image_name", "value": payload["params"]["image_name"]},
-                    {"name": "registry", "value": payload["params"]["registry"]},
-                    {"name": "tag", "value": get_tag(payload["params"])},
-                ]
-            }
-
-            log.info(json.dumps(concourse_output))
-
-            print(json.dumps(concourse_output))
+        execute_kaniko_command(payload, kaniko_command_string)
 
 
 run(json.loads(sys.stdin.read()), sys.argv[1:])
