@@ -19,7 +19,7 @@ def configure_logging():
     stderr = logging.StreamHandler(sys.stderr)
     stderr.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
     stderr.setLevel(logging.DEBUG)
-    log.addHandler(stderr)
+    logger_instance.addHandler(stderr)
     return logger_instance
 
 
