@@ -27,4 +27,6 @@ Build the specified Dockerfile and push the resulting Docker image to a registry
 
 **`dockerfile`**: *Optional*. The path to the Dockerfile to build. If not specified, set to `Dockerfile`.
 
+**`cache`**: *Optional*. Use Kaniko's cache. Should be a string in a form `"(true|false)"`, defaults to to `"false"`.
+
 **`registry`**: *Required*. The registry to push the resulting image to.

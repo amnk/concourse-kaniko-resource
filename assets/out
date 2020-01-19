@@ -77,6 +77,18 @@ def get_dockerfile(params):
     return "Dockerfile"
 
 
+def get_cache(params):
+    if "cache" in params:
+        return params["cache"]
+    return "false"
+
+
+def get_google_auth(params):
+    if "google_application_credentials" in params:
+        return {"GOOGLE_APPLICATION_CREDENTIALS": "/tmp/build/put/" + params["google_application_credentials"]}
+    return {}
+
+
 def get_context(params):
     if "build_context" in params:
         return "/tmp/build/put/" + params["build_context"]
@@ -95,12 +107,20 @@ def build_kaniko_command(payload):
     set_argument(argument_store, "--context", get_context(params))
     set_argument(argument_store, "--destination", get_destination(params))
     set_argument(argument_store, "--dockerfile", get_dockerfile(params))
+    set_argument(argument_store, "--cache", get_cache(params))
 
     command = ShellCommand("executor")
     for argument_key in argument_store:
         command.add_option(argument_key, argument_store[argument_key], "=")
 
     return command
+
+
+def build_kaniko_env(payload):
+    params = payload["params"]
+    env = os.environ.copy()
+    env.update(get_google_auth(params))
+    return env
 
 
 def do_docker_auth(source, kaniko_home_folder):
@@ -111,11 +131,11 @@ def do_docker_auth(source, kaniko_home_folder):
         shutil.copyfile(source["docker_config_file"], kaniko_docker_folder + "config.json")
 
 
-def execute_kaniko_command(payload, kaniko_build_command):
+def execute_kaniko_command(payload, kaniko_build_command, env=None):
     command_run_logs = ''
 
     # Run command
-    proc = subprocess.Popen(split(kaniko_build_command), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(split(kaniko_build_command), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
     while True:
         byte = proc.stdout.read(1)
         if byte:
@@ -158,6 +178,8 @@ def run(payload, args):
     with open("payload.json", "w") as fh:
         fh.write(json.dumps(payload))
 
+    env = build_kaniko_env(payload)
+
     log.info("Payload: " + str(payload))
     kaniko_home_folder = "/kankiko/"
     if not len(args) == 0 and args[0] == "test":
@@ -169,8 +191,10 @@ def run(payload, args):
 
     log.info("Command: " + kaniko_command_string)
 
+    
+
     if len(args) == 0 or args[0] != "test":
-        execute_kaniko_command(payload, kaniko_command_string)
+        execute_kaniko_command(payload, kaniko_command_string, env=env)
 
 
 run(json.loads(sys.stdin.read()), sys.argv[1:])
